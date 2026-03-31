@@ -1,0 +1,36 @@
+/**
+ * PMPro MailerLite admin styles.
+ *
+ * @since 1.0
+ */
+
+.pmproml-status {
+	display: inline-block;
+	padding: 4px 8px;
+	border-radius: 3px;
+	font-weight: 600;
+}
+
+.pmproml-connected {
+	color: #0a6b2e;
+	background: #d4edda;
+}
+
+.pmproml-disconnected {
+	color: #842029;
+	background: #f8d7da;
+}
+
+.pmproml-checkbox-list {
+	max-height: 200px;
+	overflow-y: auto;
+	padding: 8px;
+	border: 1px solid #ddd;
+	border-radius: 4px;
+	background: #fff;
+}
+
+.pmproml-checkbox-list label {
+	display: block;
+	padding: 2px 0;
+}
