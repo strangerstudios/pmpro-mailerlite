@@ -39,11 +39,12 @@ add_action( 'admin_init', 'pmproml_admin_init' );
 function pmproml_options_validate( $input ) {
 	$output = array();
 
-	$output['api_key']             = ! empty( $input['api_key'] ) ? sanitize_text_field( $input['api_key'] ) : '';
-	$output['sync_profile_update'] = ! empty( $input['sync_profile_update'] ) ? sanitize_text_field( $input['sync_profile_update'] ) : 'no';
-	$output['unsubscribe']         = ! empty( $input['unsubscribe'] ) ? sanitize_text_field( $input['unsubscribe'] ) : 'no';
-	$output['background_sync']     = ! empty( $input['background_sync'] ) ? 1 : 0;
-	$output['logging_enabled']     = ! empty( $input['logging_enabled'] ) ? 1 : 0;
+	$output['api_key']                = ! empty( $input['api_key'] ) ? sanitize_text_field( $input['api_key'] ) : '';
+	$output['sync_profile_update']    = ! empty( $input['sync_profile_update'] ) ? sanitize_text_field( $input['sync_profile_update'] ) : 'no';
+	$output['unsubscribe']            = ! empty( $input['unsubscribe'] ) ? sanitize_text_field( $input['unsubscribe'] ) : 'no';
+	$output['subscriber_status_mode'] = ! empty( $input['subscriber_status_mode'] ) ? sanitize_text_field( $input['subscriber_status_mode'] ) : 'active';
+	$output['background_sync']        = ! empty( $input['background_sync'] ) ? 1 : 0;
+	$output['logging_enabled']        = ! empty( $input['logging_enabled'] ) ? 1 : 0;
 
 	// Non-member groups.
 	$output['users_groups'] = ! empty( $input['users_groups'] ) ? array_map( 'sanitize_text_field', $input['users_groups'] ) : array();
@@ -189,6 +190,17 @@ function pmproml_settings_page() {
 						</td>
 					</tr>
 					<tr>
+						<th scope="row"><?php esc_html_e( 'Subscriber Status', 'pmpro-mailerlite' ); ?></th>
+						<td>
+							<?php $status_mode = ! empty( $options['subscriber_status_mode'] ) ? $options['subscriber_status_mode'] : 'active'; ?>
+							<select name="pmproml_options[subscriber_status_mode]">
+								<option value="active" <?php selected( $status_mode, 'active' ); ?>><?php esc_html_e( 'Always set to Active (bypasses double opt-in)', 'pmpro-mailerlite' ); ?></option>
+								<option value="respect" <?php selected( $status_mode, 'respect' ); ?>><?php esc_html_e( 'Respect account settings (honor double opt-in)', 'pmpro-mailerlite' ); ?></option>
+							</select>
+							<p class="description"><?php esc_html_e( 'Controls whether new subscribers are set to Active immediately or follow your MailerLite account\'s double opt-in settings.', 'pmpro-mailerlite' ); ?></p>
+						</td>
+					</tr>
+					<tr>
 						<th scope="row"><?php esc_html_e( 'Sync on Profile Update', 'pmpro-mailerlite' ); ?></th>
 						<td>
 							<?php $sync_profile = ! empty( $options['sync_profile_update'] ) ? $options['sync_profile_update'] : 'yes'; ?>
@@ -287,4 +299,79 @@ function pmproml_admin_notices() {
 			$api->ensure_custom_fields();
 		}
 	}
+
+	// Show problem subscriber warnings.
+	$problems = get_option( 'pmproml_problem_subscribers', array() );
+	if ( ! empty( $problems ) ) {
+		$count = count( $problems );
+		?>
+		<div class="notice notice-warning">
+			<p>
+				<strong><?php esc_html_e( 'MailerLite Sync Warning', 'pmpro-mailerlite' ); ?></strong>
+			</p>
+			<p>
+				<?php
+				printf(
+					/* translators: %d: Number of problem subscribers */
+					esc_html( _n(
+						'%d subscriber could not be fully synced because their MailerLite status prevents reactivation via API. They must re-subscribe through a MailerLite form or landing page.',
+						'%d subscribers could not be fully synced because their MailerLite status prevents reactivation via API. They must re-subscribe through a MailerLite form or landing page.',
+						$count,
+						'pmpro-mailerlite'
+					) ),
+					$count
+				);
+				?>
+			</p>
+			<details>
+				<summary><?php esc_html_e( 'View affected subscribers', 'pmpro-mailerlite' ); ?></summary>
+				<table class="widefat striped" style="margin-top: 8px;">
+					<thead>
+						<tr>
+							<th><?php esc_html_e( 'User', 'pmpro-mailerlite' ); ?></th>
+							<th><?php esc_html_e( 'Email', 'pmpro-mailerlite' ); ?></th>
+							<th><?php esc_html_e( 'Status', 'pmpro-mailerlite' ); ?></th>
+							<th><?php esc_html_e( 'Detected', 'pmpro-mailerlite' ); ?></th>
+						</tr>
+					</thead>
+					<tbody>
+						<?php foreach ( $problems as $uid => $info ) : ?>
+							<tr>
+								<td>
+									<a href="<?php echo esc_url( admin_url( 'user-edit.php?user_id=' . $uid ) ); ?>">
+										<?php echo esc_html( '#' . $uid ); ?>
+									</a>
+								</td>
+								<td><?php echo esc_html( $info['email'] ); ?></td>
+								<td><code><?php echo esc_html( $info['status'] ); ?></code></td>
+								<td><?php echo esc_html( $info['time'] ); ?></td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+			</details>
+			<p>
+				<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=pmpro-mailerlite&pmproml_clear_problems=1' ), 'pmproml_clear_problems' ) ); ?>" class="button button-small">
+					<?php esc_html_e( 'Dismiss All', 'pmpro-mailerlite' ); ?>
+				</a>
+			</p>
+		</div>
+		<?php
+	}
 }
+
+/**
+ * Handle clearing problem subscribers.
+ */
+function pmproml_handle_clear_problems() {
+	if ( empty( $_GET['pmproml_clear_problems'] ) || empty( $_GET['_wpnonce'] ) ) {
+		return;
+	}
+	if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'pmproml_clear_problems' ) || ! current_user_can( 'manage_options' ) ) {
+		return;
+	}
+	delete_option( 'pmproml_problem_subscribers' );
+	wp_safe_redirect( admin_url( 'admin.php?page=pmpro-mailerlite' ) );
+	exit;
+}
+add_action( 'admin_init', 'pmproml_handle_clear_problems', 5 );

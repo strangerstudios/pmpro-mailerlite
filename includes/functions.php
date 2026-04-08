@@ -156,8 +156,14 @@ function pmproml_sync_subscriber_for_user( $user_id, $update_groups = true ) {
 		'email'  => $user->user_email,
 		'fields' => $fields,
 		'groups' => $subscribe_groups,
-		'status' => 'active',
 	);
+
+	// Only set status to active if the admin has enabled it (default: yes).
+	// When disabled, respects the MailerLite account's double opt-in settings.
+	$status_mode = ! empty( $options['subscriber_status_mode'] ) ? $options['subscriber_status_mode'] : 'active';
+	if ( 'active' === $status_mode ) {
+		$subscriber_data['status'] = 'active';
+	}
 
 	/**
 	 * Filter subscriber data before sending to MailerLite.
@@ -175,12 +181,24 @@ function pmproml_sync_subscriber_for_user( $user_id, $update_groups = true ) {
 		return;
 	}
 
-	$subscriber_id = ! empty( $result['data']['id'] ) ? $result['data']['id'] : '';
+	$subscriber_id     = ! empty( $result['data']['id'] ) ? $result['data']['id'] : '';
+	$subscriber_status = ! empty( $result['data']['status'] ) ? $result['data']['status'] : '';
+
 	if ( $subscriber_id ) {
 		update_user_meta( $user_id, 'pmproml_subscriber_id', $subscriber_id );
 	}
 
-	pmproml_log( "Upserted subscriber {$subscriber_id} for user {$user_id}" );
+	pmproml_log( "Upserted subscriber {$subscriber_id} for user {$user_id} (status: {$subscriber_status})" );
+
+	// Flag subscribers in problem states that the API cannot reactivate.
+	$problem_states = array( 'bounced', 'junk', 'unsubscribed' );
+	if ( in_array( $subscriber_status, $problem_states, true ) ) {
+		pmproml_log( "WARNING: Subscriber {$subscriber_id} (user {$user_id}, {$user->user_email}) has status '{$subscriber_status}'. MailerLite cannot reactivate this subscriber via API — they must re-subscribe through a form or landing page." );
+		pmproml_flag_problem_subscriber( $user_id, $user->user_email, $subscriber_status );
+	} else {
+		// Clear any previous flag if subscriber is now active.
+		pmproml_clear_problem_subscriber( $user_id );
+	}
 
 	// ------------------------------------------------------------------
 	// Handle group removal for old levels.
@@ -227,7 +245,53 @@ function pmproml_get_all_configured_groups() {
 		}
 	}
 
-	return array_unique( array_filter( $all_groups ) );
+	$all_groups = array_unique( array_filter( $all_groups ) );
+
+	/**
+	 * Filter which group IDs are considered PMPro-controlled.
+	 *
+	 * Only PMPro-controlled groups are removed when a member loses a level.
+	 * Groups not in this list are preserved even during level changes.
+	 *
+	 * @param array $all_groups All configured group IDs.
+	 */
+	return apply_filters( 'pmproml_controlled_group_ids', $all_groups );
+}
+
+// ------------------------------------------------------------------
+// Problem Subscriber Tracking
+// ------------------------------------------------------------------
+
+/**
+ * Flag a subscriber in a problem state (bounced, junk, unsubscribed).
+ *
+ * Stores in a transient so the admin page can display warnings.
+ *
+ * @param int    $user_id WordPress user ID.
+ * @param string $email   Subscriber email.
+ * @param string $status  MailerLite subscriber status.
+ */
+function pmproml_flag_problem_subscriber( $user_id, $email, $status ) {
+	$problems = get_option( 'pmproml_problem_subscribers', array() );
+	$problems[ $user_id ] = array(
+		'email'  => $email,
+		'status' => $status,
+		'time'   => current_time( 'mysql' ),
+	);
+	update_option( 'pmproml_problem_subscribers', $problems, false );
+}
+
+/**
+ * Clear a problem subscriber flag.
+ *
+ * @param int $user_id WordPress user ID.
+ */
+function pmproml_clear_problem_subscriber( $user_id ) {
+	$problems = get_option( 'pmproml_problem_subscribers', array() );
+	if ( isset( $problems[ $user_id ] ) ) {
+		unset( $problems[ $user_id ] );
+		update_option( 'pmproml_problem_subscribers', $problems, false );
+	}
 }
 
 // ------------------------------------------------------------------

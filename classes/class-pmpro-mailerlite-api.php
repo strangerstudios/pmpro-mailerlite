@@ -126,6 +126,7 @@ class PMPro_MailerLite_API {
 				'Authorization' => 'Bearer ' . $this->api_key,
 				'Content-Type'  => 'application/json',
 				'Accept'        => 'application/json',
+				'User-Agent'    => 'PMPro-MailerLite/' . PMPROML_VERSION,
 			),
 			'timeout' => 15,
 		);
@@ -147,6 +148,13 @@ class PMPro_MailerLite_API {
 		// 204 No Content is success (e.g. DELETE).
 		if ( 204 === $code ) {
 			return array();
+		}
+
+		// Handle rate limiting (120 requests/minute).
+		if ( 429 === $code ) {
+			$retry_after = wp_remote_retrieve_header( $response, 'retry-after' );
+			pmproml_log( "Rate limited ({$method} {$endpoint}). Retry-After: {$retry_after}" );
+			return new WP_Error( 'rate_limited', __( 'MailerLite API rate limit reached. The request will be retried.', 'pmpro-mailerlite' ), array( 'status' => 429, 'retry_after' => $retry_after ) );
 		}
 
 		if ( $code < 200 || $code >= 300 ) {
