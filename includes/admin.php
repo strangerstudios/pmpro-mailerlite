@@ -8,370 +8,358 @@
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Register the settings page under PMPro menu.
+ * Add MailerLite settings link to PMPro settings menu.
+ *
+ * @since 1.0
  */
-function pmproml_admin_menu() {
+function pmpromailerlite_admin_menu() {
 	add_submenu_page(
 		'pmpro-dashboard',
-		__( 'PMPro MailerLite', 'pmpro-mailerlite' ),
+		__( 'MailerLite', 'pmpro-mailerlite' ),
 		__( 'MailerLite', 'pmpro-mailerlite' ),
 		'manage_options',
 		'pmpro-mailerlite',
-		'pmproml_settings_page'
+		'pmpromailerlite_settings_page'
 	);
 }
-add_action( 'admin_menu', 'pmproml_admin_menu' );
+add_action( 'admin_menu', 'pmpromailerlite_admin_menu' );
 
 /**
- * Register settings.
- */
-function pmproml_admin_init() {
-	register_setting( 'pmproml_options', 'pmproml_options', 'pmproml_options_validate' );
-}
-add_action( 'admin_init', 'pmproml_admin_init' );
-
-/**
- * Validate and sanitize options on save.
+ * Render the MailerLite settings page.
  *
- * @param array $input Raw input from form.
- * @return array Sanitized options.
+ * @since 1.0
  */
-function pmproml_options_validate( $input ) {
-	$output = array();
+function pmpromailerlite_settings_page() {
+	// Get existing options.
+	$options = get_option( 'pmpromailerlite_options', array() );
 
-	$output['api_key']                = ! empty( $input['api_key'] ) ? sanitize_text_field( $input['api_key'] ) : '';
-	$output['sync_profile_update']    = ! empty( $input['sync_profile_update'] ) ? sanitize_text_field( $input['sync_profile_update'] ) : 'no';
-	$output['unsubscribe']            = ! empty( $input['unsubscribe'] ) ? sanitize_text_field( $input['unsubscribe'] ) : 'no';
-	$output['subscriber_status_mode'] = ! empty( $input['subscriber_status_mode'] ) ? sanitize_text_field( $input['subscriber_status_mode'] ) : 'active';
-	$output['background_sync']        = ! empty( $input['background_sync'] ) ? 1 : 0;
-	$output['logging_enabled']        = ! empty( $input['logging_enabled'] ) ? 1 : 0;
+	// Get all PMPro levels.
+	$pmpro_levels = pmpro_getAllLevels( true );
+	$pmpro_levels = pmpro_sort_levels_by_order( $pmpro_levels );
 
-	// Non-member groups.
-	$output['users_groups'] = ! empty( $input['users_groups'] ) ? array_map( 'sanitize_text_field', $input['users_groups'] ) : array();
+	// Handle form submission.
+	if ( isset( $_POST['pmpromailerlite_settings_nonce'] ) && wp_verify_nonce( $_POST['pmpromailerlite_settings_nonce'], 'pmpromailerlite_save_settings' ) ) {
+		// Check if the API key changed so we can clear the group cache.
+		$old_api_key     = isset( $options['api_key'] ) ? $options['api_key'] : '';
+		$new_api_key     = empty( $_POST['api_key'] ) ? '' : sanitize_text_field( wp_unslash( $_POST['api_key'] ) );
+		$api_key_changed = ( $old_api_key !== $new_api_key );
 
-	// Per-level groups.
-	$levels = pmpro_getAllLevels( true, true );
-	foreach ( $levels as $level ) {
-		$key = 'level_' . $level->id . '_groups';
-		$output[ $key ] = ! empty( $input[ $key ] ) ? array_map( 'sanitize_text_field', $input[ $key ] ) : array();
+		// Sanitize and save all general settings.
+		$options['api_key']                = $new_api_key;
+		$options['update_on_profile_save'] = empty( $_POST['update_on_profile_save'] ) ? 'yes' : sanitize_text_field( wp_unslash( $_POST['update_on_profile_save'] ) );
+		$options['unsubscribe']            = empty( $_POST['unsubscribe'] ) ? 'yes' : sanitize_text_field( wp_unslash( $_POST['unsubscribe'] ) );
+		$options['subscriber_status_mode'] = empty( $_POST['subscriber_status_mode'] ) ? 'active' : sanitize_text_field( wp_unslash( $_POST['subscriber_status_mode'] ) );
+		$options['enable_async']           = empty( $_POST['enable_async'] ) ? 'yes' : sanitize_text_field( wp_unslash( $_POST['enable_async'] ) );
+		$options['enable_debug_log']       = empty( $_POST['enable_debug_log'] ) ? 'no' : sanitize_text_field( wp_unslash( $_POST['enable_debug_log'] ) );
+
+		// Save per-level group assignments if the groups section was rendered.
+		if ( ! empty( $_POST['level_groups_shown'] ) ) {
+			$options['level_groups_all'] = array();
+			foreach ( $pmpro_levels as $level ) {
+				$key             = 'level_groups_' . $level->id;
+				$options[ $key ] = empty( $_POST[ $key ] ) ? array() : array_map( 'sanitize_text_field', wp_unslash( (array) $_POST[ $key ] ) );
+				$options['level_groups_all'] = array_merge( $options['level_groups_all'], $options[ $key ] );
+			}
+			$options['level_groups_all'] = array_unique( $options['level_groups_all'] );
+		}
+
+		update_option( 'pmpromailerlite_options', $options );
+
+		if ( $api_key_changed ) {
+			// Clear cached groups so they are re-fetched with the new key.
+			delete_transient( 'pmpromailerlite_all_groups' );
+		}
+
+		// If debug logging was enabled, write a log entry to confirm it works.
+		pmpromailerlite_debug_log( 'PMPro MailerLite settings updated.' );
+
+		// Show a success message.
+		echo '<div class="updated"><p>' . esc_html__( 'Settings saved.', 'pmpro-mailerlite' ) . '</p></div>';
 	}
 
-	// If API key changed, clear transients and ensure custom fields.
-	$old_options = get_option( 'pmproml_options', array() );
-	if ( $output['api_key'] !== ( $old_options['api_key'] ?? '' ) ) {
-		delete_transient( 'pmproml_all_groups' );
-		// Custom fields will be created on next sync if key is valid.
-	}
-
-	return $output;
-}
-
-/**
- * Render the settings page.
- */
-function pmproml_settings_page() {
-	$options = get_option( 'pmproml_options', array() );
-	$api     = PMPro_MailerLite_API::get_instance();
-
-	$force_refresh = ! empty( $_GET['pmproml_refresh'] );
-	$groups        = $api->is_connected() ? $api->get_groups( $force_refresh ) : array();
-	$levels        = function_exists( 'pmpro_getAllLevels' ) ? pmpro_getAllLevels( true, true ) : array();
-
-	// Test connection on first load with key.
-	$connection_valid = false;
-	if ( $api->is_connected() ) {
-		$connection_valid = ( ! empty( $groups ) || $api->test_connection() );
-	}
+	// Get the API instance. Called after save so it reads the fresh option.
+	$api = PMPro_MailerLite_API::get_instance();
 	?>
-	<div class="wrap pmpro_admin pmpro-admin">
-		<h1><?php esc_html_e( 'MailerLite Integration', 'pmpro-mailerlite' ); ?></h1>
+	<div class="wrap pmpro_admin">
+		<h1><?php esc_html_e( 'MailerLite Settings', 'pmpro-mailerlite' ); ?></h1>
+		<p>
+			<?php
+			$docs_link = '<a title="' . esc_attr__( 'Paid Memberships Pro - MailerLite Add On Documentation', 'pmpro-mailerlite' ) . '" target="_blank" rel="nofollow noopener" href="https://www.paidmembershipspro.com/add-ons/pmpro-mailerlite/?utm_source=plugin&utm_medium=pmpro-mailerlite&utm_campaign=add-ons&utm_content=pmpro-mailerlite-settings">' . esc_html__( 'MailerLite Add On documentation', 'pmpro-mailerlite' ) . '</a>';
+			// translators: %s: Link to MailerLite Add On documentation.
+			printf( esc_html__( 'Learn more about these settings in the %s.', 'pmpro-mailerlite' ), $docs_link ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			?>
+		</p>
 
-		<?php pmproml_admin_notices(); ?>
+		<?php pmpromailerlite_admin_notices(); ?>
 
-		<form method="post" action="options.php">
-			<?php settings_fields( 'pmproml_options' ); ?>
-
-			<h2><?php esc_html_e( 'Authentication', 'pmpro-mailerlite' ); ?></h2>
-			<table class="form-table">
-				<tr>
-					<th scope="row">
-						<label for="pmproml_api_key"><?php esc_html_e( 'API Key', 'pmpro-mailerlite' ); ?></label>
-					</th>
-					<td>
-						<input type="password" id="pmproml_api_key" name="pmproml_options[api_key]"
-							value="<?php echo esc_attr( ! empty( $options['api_key'] ) ? $options['api_key'] : '' ); ?>"
-							class="regular-text" autocomplete="off" />
-						<p class="description">
-							<?php esc_html_e( 'Find your API key in MailerLite under Integrations > MailerLite API.', 'pmpro-mailerlite' ); ?>
-						</p>
-					</td>
-				</tr>
-				<tr>
-					<th scope="row"><?php esc_html_e( 'Connection Status', 'pmpro-mailerlite' ); ?></th>
-					<td>
-						<?php if ( $api->is_connected() && $connection_valid ) : ?>
-							<span class="pmproml-status pmproml-connected">
-								&#10003; <?php esc_html_e( 'Connected to MailerLite', 'pmpro-mailerlite' ); ?>
-							</span>
-						<?php elseif ( $api->is_connected() && ! $connection_valid ) : ?>
-							<span class="pmproml-status pmproml-disconnected">
-								&#10007; <?php esc_html_e( 'API key is invalid or connection failed', 'pmpro-mailerlite' ); ?>
-							</span>
-						<?php else : ?>
-							<span class="description"><?php esc_html_e( 'Enter your API key and save to connect.', 'pmpro-mailerlite' ); ?></span>
-						<?php endif; ?>
-					</td>
-				</tr>
-			</table>
-
-			<?php if ( $api->is_connected() && $connection_valid ) : ?>
-
-				<hr />
-				<h2>
-					<?php esc_html_e( 'Group Settings', 'pmpro-mailerlite' ); ?>
-					<a href="<?php echo esc_url( admin_url( 'admin.php?page=pmpro-mailerlite&pmproml_refresh=1' ) ); ?>" class="page-title-action">
-						<?php esc_html_e( 'Refresh Groups', 'pmpro-mailerlite' ); ?>
-					</a>
-				</h2>
-				<p class="description">
-					<?php esc_html_e( 'MailerLite uses groups to organize subscribers. Assign groups to each membership level below.', 'pmpro-mailerlite' ); ?>
-				</p>
-
-				<?php if ( ! empty( $levels ) ) : ?>
-
-					<h3><?php esc_html_e( 'Non-Member Groups', 'pmpro-mailerlite' ); ?></h3>
-					<p class="description"><?php esc_html_e( 'Users without a membership level will be added to these groups.', 'pmpro-mailerlite' ); ?></p>
+		<form method="post" action="">
+			<div class="pmpro_section" data-visibility="shown" data-activated="true">
+				<div class="pmpro_section_toggle">
+					<button class="pmpro_section-toggle-button" type="button" aria-expanded="true">
+						<span class="dashicons dashicons-arrow-up-alt2"></span>
+						<?php esc_html_e( 'General Settings', 'pmpro-mailerlite' ); ?>
+					</button>
+				</div>
+				<div class="pmpro_section_inside">
 					<table class="form-table">
 						<tr>
-							<th scope="row"><?php esc_html_e( 'Groups', 'pmpro-mailerlite' ); ?></th>
+							<th scope="row">
+								<label for="api_key"><?php esc_html_e( 'API Key', 'pmpro-mailerlite' ); ?></label>
+							</th>
+							<td>
+								<input type="password" name="api_key" id="api_key" value="<?php echo esc_attr( isset( $options['api_key'] ) ? $options['api_key'] : '' ); ?>" class="regular-text" autocomplete="off">
+								<p class="description">
+									<?php esc_html_e( 'Your API key is used to connect your MailerLite account to this membership site.', 'pmpro-mailerlite' ); ?>
+									<a href="https://app.mailerlite.com/integrations/api/" target="_blank" rel="noopener"><?php esc_html_e( 'Find your API key in MailerLite under Integrations > MailerLite API.', 'pmpro-mailerlite' ); ?></a>
+								</p>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row"><label for="update_on_profile_save"><?php esc_html_e( 'Sync on Profile Update', 'pmpro-mailerlite' ); ?></label></th>
 							<td>
 								<?php
-								$selected = ! empty( $options['users_groups'] ) ? $options['users_groups'] : array();
-								pmproml_render_checkbox_list( 'pmproml_options[users_groups][]', $groups, $selected );
+								$update_on_profile_save = isset( $options['update_on_profile_save'] ) ? $options['update_on_profile_save'] : 'yes';
 								?>
+								<select name="update_on_profile_save" id="update_on_profile_save">
+									<option value="yes" <?php selected( $update_on_profile_save, 'yes' ); ?>><?php esc_html_e( 'Yes, sync subscriber data and groups', 'pmpro-mailerlite' ); ?></option>
+									<option value="subscriber_only" <?php selected( $update_on_profile_save, 'subscriber_only' ); ?>><?php esc_html_e( 'Yes, sync subscriber data only', 'pmpro-mailerlite' ); ?></option>
+									<option value="no" <?php selected( $update_on_profile_save, 'no' ); ?>><?php esc_html_e( 'No, do not sync anything on profile update', 'pmpro-mailerlite' ); ?></option>
+								</select>
+								<p class="description"><?php esc_html_e( 'Choose what to sync to MailerLite when a user profile is updated in WordPress.', 'pmpro-mailerlite' ); ?></p>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row"><label for="unsubscribe"><?php esc_html_e( 'Remove Groups When Membership Changes', 'pmpro-mailerlite' ); ?></label></th>
+							<td>
+								<?php
+								$unsubscribe = isset( $options['unsubscribe'] ) ? $options['unsubscribe'] : 'yes';
+								?>
+								<select name="unsubscribe" id="unsubscribe">
+									<option value="yes" <?php selected( $unsubscribe, 'yes' ); ?>><?php esc_html_e( 'Yes, remove groups that no longer apply', 'pmpro-mailerlite' ); ?></option>
+									<option value="no" <?php selected( $unsubscribe, 'no' ); ?>><?php esc_html_e( 'No, never remove groups', 'pmpro-mailerlite' ); ?></option>
+								</select>
+								<p class="description"><?php esc_html_e( 'When enabled, the integration will remove groups in MailerLite when they no longer match the current membership.', 'pmpro-mailerlite' ); ?></p>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row"><label for="subscriber_status_mode"><?php esc_html_e( 'Subscriber Status', 'pmpro-mailerlite' ); ?></label></th>
+							<td>
+								<?php
+								$subscriber_status_mode = isset( $options['subscriber_status_mode'] ) ? $options['subscriber_status_mode'] : 'active';
+								?>
+								<select name="subscriber_status_mode" id="subscriber_status_mode">
+									<option value="active" <?php selected( $subscriber_status_mode, 'active' ); ?>><?php esc_html_e( 'Always set to Active (bypasses double opt-in)', 'pmpro-mailerlite' ); ?></option>
+									<option value="respect" <?php selected( $subscriber_status_mode, 'respect' ); ?>><?php esc_html_e( 'Respect account settings (honor double opt-in)', 'pmpro-mailerlite' ); ?></option>
+								</select>
+								<p class="description"><?php esc_html_e( 'Controls whether new subscribers are set to Active immediately or follow your MailerLite account\'s double opt-in settings.', 'pmpro-mailerlite' ); ?></p>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row"><label for="enable_async"><?php esc_html_e( 'Process Updates in the Background', 'pmpro-mailerlite' ); ?></label></th>
+							<td>
+								<?php
+								$enable_async = isset( $options['enable_async'] ) ? $options['enable_async'] : 'yes';
+								?>
+								<select name="enable_async" id="enable_async">
+									<option value="yes" <?php selected( $enable_async, 'yes' ); ?>><?php esc_html_e( 'Yes, run updates in the background', 'pmpro-mailerlite' ); ?></option>
+									<option value="no" <?php selected( $enable_async, 'no' ); ?>><?php esc_html_e( 'No, run updates immediately', 'pmpro-mailerlite' ); ?></option>
+								</select>
+								<p class="description"><?php esc_html_e( 'When enabled, subscriber updates and group changes will run in the background using Action Scheduler. This can improve performance during checkout, profile updates, and membership changes.', 'pmpro-mailerlite' ); ?></p>
+							</td>
+						</tr>
+						<tr>
+							<th scope="row"><label><?php esc_html_e( 'Debug Logging', 'pmpro-mailerlite' ); ?></label></th>
+							<td>
+								<?php
+								$enable_debug_log = isset( $options['enable_debug_log'] ) ? $options['enable_debug_log'] : 'no';
+								?>
+								<select name="enable_debug_log" id="enable_debug_log">
+									<option value="yes" <?php selected( $enable_debug_log, 'yes' ); ?>><?php esc_html_e( 'Yes, enable debug logging', 'pmpro-mailerlite' ); ?></option>
+									<option value="no" <?php selected( $enable_debug_log, 'no' ); ?>><?php esc_html_e( 'No, disable debug logging', 'pmpro-mailerlite' ); ?></option>
+								</select>
+								<p class="description">
+									<?php
+									esc_html_e( 'When enabled, the integration will write debug details to the log to help troubleshoot issues.', 'pmpro-mailerlite' );
+									if ( 'yes' === $enable_debug_log ) {
+										$log_file_link = add_query_arg(
+											array(
+												'pmpro_restricted_file_dir' => 'logs',
+												'pmpro_restricted_file'     => 'pmpro-mailerlite.log',
+											),
+											home_url()
+										);
+										echo ' <a href="' . esc_url( $log_file_link ) . '" target="_blank">' . esc_html__( 'Download log.', 'pmpro-mailerlite' ) . '</a>';
+									}
+									?>
+								</p>
 							</td>
 						</tr>
 					</table>
+				</div>
+			</div>
 
-					<h3><?php esc_html_e( 'Membership Level Groups', 'pmpro-mailerlite' ); ?></h3>
-					<p class="description"><?php esc_html_e( 'Members will be added to the selected groups when they have the corresponding level.', 'pmpro-mailerlite' ); ?></p>
+			<div class="pmpro_section" data-visibility="<?php echo empty( $options['api_key'] ) ? 'hidden' : 'shown'; ?>" data-activated="<?php echo empty( $options['api_key'] ) ? 'false' : 'true'; ?>">
+				<div class="pmpro_section_toggle">
+					<button class="pmpro_section-toggle-button" type="button" aria-expanded="<?php echo empty( $options['api_key'] ) ? 'false' : 'true'; ?>">
+						<span class="dashicons <?php echo empty( $options['api_key'] ) ? 'dashicons-arrow-down-alt2' : 'dashicons-arrow-up-alt2'; ?>"></span>
+						<?php esc_html_e( 'Assign Groups', 'pmpro-mailerlite' ); ?>
+					</button>
+				</div>
+				<div class="pmpro_section_inside" style="<?php echo empty( $options['api_key'] ) ? 'display:none;' : ''; ?>">
+					<?php
+					$force_refresh = ! empty( $_GET['pmpromailerlite_refresh_groups'] );
+					$groups        = $api->is_connected() ? $api->get_groups( $force_refresh ) : array();
 
-					<?php foreach ( $levels as $level ) : ?>
+					if ( ! $api->is_connected() ) {
+						echo '<div class="pmpro_message pmpro_error"><p>' . esc_html__( 'Enter your API key above and save to connect to MailerLite.', 'pmpro-mailerlite' ) . '</p></div>';
+					} elseif ( empty( $groups ) ) {
+						?>
+						<p>
+							<?php esc_html_e( 'No groups found in your MailerLite account.', 'pmpro-mailerlite' ); ?>
+							<a href="<?php echo esc_url( add_query_arg( 'pmpromailerlite_refresh_groups', '1' ) ); ?>">
+								<?php esc_html_e( 'Click here to refresh groups', 'pmpro-mailerlite' ); ?>
+							</a>
+						</p>
+						<?php
+					} else {
+						?>
+						<p>
+							<?php echo esc_html__( 'Select the MailerLite groups to assign to members when they are added to each membership level.', 'pmpro-mailerlite' ) . ' '; ?>
+							<a href="<?php echo esc_url( add_query_arg( 'pmpromailerlite_refresh_groups', '1' ) ); ?>">
+								<?php esc_html_e( 'Click here to refresh groups', 'pmpro-mailerlite' ); ?>
+							</a>
+						</p>
+						<input type="hidden" name="level_groups_shown" value="1">
 						<table class="form-table">
-							<tr>
-								<th scope="row"><?php echo esc_html( $level->name ); ?></th>
-								<td>
-									<?php
-									$key      = 'level_' . $level->id . '_groups';
-									$selected = ! empty( $options[ $key ] ) ? $options[ $key ] : array();
-									pmproml_render_checkbox_list( "pmproml_options[{$key}][]", $groups, $selected );
-									?>
-								</td>
-							</tr>
-						</table>
-					<?php endforeach; ?>
-
-				<?php else : ?>
-					<p><?php esc_html_e( 'No membership levels found. Create membership levels in PMPro first.', 'pmpro-mailerlite' ); ?></p>
-				<?php endif; ?>
-
-				<hr />
-				<h2><?php esc_html_e( 'Sync Settings', 'pmpro-mailerlite' ); ?></h2>
-				<table class="form-table">
-					<tr>
-						<th scope="row"><?php esc_html_e( 'Remove from Groups on Level Change', 'pmpro-mailerlite' ); ?></th>
-						<td>
-							<?php $unsub = ! empty( $options['unsubscribe'] ) ? $options['unsubscribe'] : 'yes'; ?>
-							<select name="pmproml_options[unsubscribe]">
-								<option value="no" <?php selected( $unsub, 'no' ); ?>><?php esc_html_e( 'No', 'pmpro-mailerlite' ); ?></option>
-								<option value="yes" <?php selected( $unsub, 'yes' ); ?>><?php esc_html_e( 'Yes (remove from old level groups)', 'pmpro-mailerlite' ); ?></option>
-							</select>
-							<p class="description"><?php esc_html_e( 'When a member changes or loses a level, remove them from groups they no longer qualify for.', 'pmpro-mailerlite' ); ?></p>
-						</td>
-					</tr>
-					<tr>
-						<th scope="row"><?php esc_html_e( 'Subscriber Status', 'pmpro-mailerlite' ); ?></th>
-						<td>
-							<?php $status_mode = ! empty( $options['subscriber_status_mode'] ) ? $options['subscriber_status_mode'] : 'active'; ?>
-							<select name="pmproml_options[subscriber_status_mode]">
-								<option value="active" <?php selected( $status_mode, 'active' ); ?>><?php esc_html_e( 'Always set to Active (bypasses double opt-in)', 'pmpro-mailerlite' ); ?></option>
-								<option value="respect" <?php selected( $status_mode, 'respect' ); ?>><?php esc_html_e( 'Respect account settings (honor double opt-in)', 'pmpro-mailerlite' ); ?></option>
-							</select>
-							<p class="description"><?php esc_html_e( 'Controls whether new subscribers are set to Active immediately or follow your MailerLite account\'s double opt-in settings.', 'pmpro-mailerlite' ); ?></p>
-						</td>
-					</tr>
-					<tr>
-						<th scope="row"><?php esc_html_e( 'Sync on Profile Update', 'pmpro-mailerlite' ); ?></th>
-						<td>
-							<?php $sync_profile = ! empty( $options['sync_profile_update'] ) ? $options['sync_profile_update'] : 'yes'; ?>
-							<select name="pmproml_options[sync_profile_update]">
-								<option value="no" <?php selected( $sync_profile, 'no' ); ?>><?php esc_html_e( 'No', 'pmpro-mailerlite' ); ?></option>
-								<option value="subscriber_only" <?php selected( $sync_profile, 'subscriber_only' ); ?>><?php esc_html_e( 'Yes (subscriber data only)', 'pmpro-mailerlite' ); ?></option>
-								<option value="yes" <?php selected( $sync_profile, 'yes' ); ?>><?php esc_html_e( 'Yes (subscriber data + groups)', 'pmpro-mailerlite' ); ?></option>
-							</select>
-							<p class="description"><?php esc_html_e( 'Sync subscriber data to MailerLite when a user updates their WordPress profile.', 'pmpro-mailerlite' ); ?></p>
-						</td>
-					</tr>
-					<tr>
-						<th scope="row"><?php esc_html_e( 'Process in Background', 'pmpro-mailerlite' ); ?></th>
-						<td>
-							<label>
-								<input type="checkbox" name="pmproml_options[background_sync]" value="1"
-									<?php checked( ! empty( $options['background_sync'] ) ); ?> />
-								<?php esc_html_e( 'Use Action Scheduler for background processing (recommended).', 'pmpro-mailerlite' ); ?>
-							</label>
-						</td>
-					</tr>
-					<tr>
-						<th scope="row"><?php esc_html_e( 'Debug Logging', 'pmpro-mailerlite' ); ?></th>
-						<td>
-							<label>
-								<input type="checkbox" name="pmproml_options[logging_enabled]" value="1"
-									<?php checked( ! empty( $options['logging_enabled'] ) ); ?> />
-								<?php esc_html_e( 'Enable debug logging for API calls and sync events.', 'pmpro-mailerlite' ); ?>
-							</label>
 							<?php
-							$log_file = ( defined( 'PMPRO_DIR' ) ? PMPRO_DIR . '/logs/' : PMPROML_DIR . 'logs/' ) . 'pmpro-mailerlite.log';
-							if ( file_exists( $log_file ) ) :
+							foreach ( $pmpro_levels as $level ) {
+								$key             = 'level_groups_' . $level->id;
+								$selected_groups = isset( $options[ $key ] ) ? array_map( 'strval', (array) $options[ $key ] ) : array();
 								?>
-								<p class="description">
-									<?php
-									printf(
-										/* translators: %s: Log file size */
-										esc_html__( 'Log file size: %s', 'pmpro-mailerlite' ),
-										esc_html( size_format( filesize( $log_file ) ) )
-									);
-									?>
-								</p>
-							<?php endif; ?>
-						</td>
-					</tr>
-				</table>
+								<tr>
+									<th scope="row"><?php echo esc_html( $level->name ); ?></th>
+									<td>
+										<?php
+										$classes = array( 'pmpro_checkbox_box' );
+										if ( count( $groups ) > 5 ) {
+											$classes[] = 'pmpro_scrollable';
+										}
+										?>
+										<div class="<?php echo esc_attr( implode( ' ', $classes ) ); ?>">
+											<?php
+											foreach ( $groups as $group ) {
+												$checked = in_array( (string) $group['id'], $selected_groups, true ) ? 'checked' : '';
+												?>
+												<div class="pmpro_clickable">
+													<input type="checkbox" id="level_groups_<?php echo esc_attr( $level->id ); ?>_<?php echo esc_attr( $group['id'] ); ?>" name="level_groups_<?php echo esc_attr( $level->id ); ?>[]" value="<?php echo esc_attr( $group['id'] ); ?>" <?php echo esc_attr( $checked ); ?>>
+													<label for="level_groups_<?php echo esc_attr( $level->id ); ?>_<?php echo esc_attr( $group['id'] ); ?>">
+														<?php echo esc_html( $group['name'] ); ?>
+													</label>
+												</div>
+												<?php
+											}
+											?>
+										</div>
+									</td>
+								</tr>
+								<?php
+							}
+							?>
+						</table>
+						<?php
+					}
+					?>
+				</div>
+			</div>
 
-			<?php endif; ?>
-
-			<?php submit_button(); ?>
+			<?php wp_nonce_field( 'pmpromailerlite_save_settings', 'pmpromailerlite_settings_nonce' ); ?>
+			<input type="submit" class="button button-primary" value="<?php esc_attr_e( 'Save Changes', 'pmpro-mailerlite' ); ?>">
 		</form>
 	</div>
 	<?php
 }
 
 /**
- * Render a checkbox list for groups.
+ * Display admin notices for problem subscribers.
  *
- * @param string $name     Input name attribute.
- * @param array  $items    Items to display (each with 'id' and 'name').
- * @param array  $selected Currently selected item IDs.
+ * @since 1.0
  */
-function pmproml_render_checkbox_list( $name, $items, $selected ) {
-	if ( empty( $items ) ) {
-		echo '<p class="description">' . esc_html__( 'No groups found. Create groups in MailerLite first.', 'pmpro-mailerlite' ) . '</p>';
+function pmpromailerlite_admin_notices() {
+	$problems = get_option( 'pmpromailerlite_problem_subscribers', array() );
+	if ( empty( $problems ) ) {
 		return;
 	}
 
-	// Cast selected to strings for comparison.
-	$selected = array_map( 'strval', $selected );
-
-	echo '<fieldset class="pmproml-checkbox-list">';
-	foreach ( $items as $item ) {
-		$id      = (string) $item['id'];
-		$label   = $item['name'];
-		$checked = in_array( $id, $selected, true ) ? ' checked' : '';
-		printf(
-			'<label><input type="checkbox" name="%s" value="%s"%s /> %s</label><br/>',
-			esc_attr( $name ),
-			esc_attr( $id ),
-			$checked,
-			esc_html( $label )
-		);
-	}
-	echo '</fieldset>';
-}
-
-/**
- * Display admin notices.
- */
-function pmproml_admin_notices() {
-	if ( ! empty( $_GET['settings-updated'] ) ) {
-		$api = PMPro_MailerLite_API::get_instance();
-		if ( $api->is_connected() ) {
-			// Ensure custom fields exist on first successful connection.
-			$api->ensure_custom_fields();
-		}
-	}
-
-	// Show problem subscriber warnings.
-	$problems = get_option( 'pmproml_problem_subscribers', array() );
-	if ( ! empty( $problems ) ) {
-		$count = count( $problems );
-		?>
-		<div class="notice notice-warning">
-			<p>
-				<strong><?php esc_html_e( 'MailerLite Sync Warning', 'pmpro-mailerlite' ); ?></strong>
-			</p>
-			<p>
-				<?php
-				printf(
-					/* translators: %d: Number of problem subscribers */
-					esc_html( _n(
-						'%d subscriber could not be fully synced because their MailerLite status prevents reactivation via API. They must re-subscribe through a MailerLite form or landing page.',
-						'%d subscribers could not be fully synced because their MailerLite status prevents reactivation via API. They must re-subscribe through a MailerLite form or landing page.',
-						$count,
-						'pmpro-mailerlite'
-					) ),
-					$count
-				);
-				?>
-			</p>
-			<details>
-				<summary><?php esc_html_e( 'View affected subscribers', 'pmpro-mailerlite' ); ?></summary>
-				<table class="widefat striped" style="margin-top: 8px;">
-					<thead>
+	$count = count( $problems );
+	?>
+	<div class="notice notice-warning">
+		<p>
+			<strong><?php esc_html_e( 'MailerLite Sync Warning', 'pmpro-mailerlite' ); ?></strong>
+		</p>
+		<p>
+			<?php
+			printf(
+				/* translators: %d: Number of problem subscribers */
+				esc_html( _n(
+					'%d subscriber could not be fully synced because their MailerLite status prevents reactivation via API. They must re-subscribe through a MailerLite form or landing page.',
+					'%d subscribers could not be fully synced because their MailerLite status prevents reactivation via API. They must re-subscribe through a MailerLite form or landing page.',
+					$count,
+					'pmpro-mailerlite'
+				) ),
+				$count
+			);
+			?>
+		</p>
+		<details>
+			<summary><?php esc_html_e( 'View affected subscribers', 'pmpro-mailerlite' ); ?></summary>
+			<table class="widefat striped" style="margin-top: 8px;">
+				<thead>
+					<tr>
+						<th><?php esc_html_e( 'User', 'pmpro-mailerlite' ); ?></th>
+						<th><?php esc_html_e( 'Email', 'pmpro-mailerlite' ); ?></th>
+						<th><?php esc_html_e( 'Status', 'pmpro-mailerlite' ); ?></th>
+						<th><?php esc_html_e( 'Detected', 'pmpro-mailerlite' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php foreach ( $problems as $uid => $info ) : ?>
 						<tr>
-							<th><?php esc_html_e( 'User', 'pmpro-mailerlite' ); ?></th>
-							<th><?php esc_html_e( 'Email', 'pmpro-mailerlite' ); ?></th>
-							<th><?php esc_html_e( 'Status', 'pmpro-mailerlite' ); ?></th>
-							<th><?php esc_html_e( 'Detected', 'pmpro-mailerlite' ); ?></th>
+							<td>
+								<a href="<?php echo esc_url( admin_url( 'user-edit.php?user_id=' . $uid ) ); ?>">
+									<?php echo esc_html( '#' . $uid ); ?>
+								</a>
+							</td>
+							<td><?php echo esc_html( $info['email'] ); ?></td>
+							<td><code><?php echo esc_html( $info['status'] ); ?></code></td>
+							<td><?php echo esc_html( $info['time'] ); ?></td>
 						</tr>
-					</thead>
-					<tbody>
-						<?php foreach ( $problems as $uid => $info ) : ?>
-							<tr>
-								<td>
-									<a href="<?php echo esc_url( admin_url( 'user-edit.php?user_id=' . $uid ) ); ?>">
-										<?php echo esc_html( '#' . $uid ); ?>
-									</a>
-								</td>
-								<td><?php echo esc_html( $info['email'] ); ?></td>
-								<td><code><?php echo esc_html( $info['status'] ); ?></code></td>
-								<td><?php echo esc_html( $info['time'] ); ?></td>
-							</tr>
-						<?php endforeach; ?>
-					</tbody>
-				</table>
-			</details>
-			<p>
-				<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=pmpro-mailerlite&pmproml_clear_problems=1' ), 'pmproml_clear_problems' ) ); ?>" class="button button-small">
-					<?php esc_html_e( 'Dismiss All', 'pmpro-mailerlite' ); ?>
-				</a>
-			</p>
-		</div>
-		<?php
-	}
+					<?php endforeach; ?>
+				</tbody>
+			</table>
+		</details>
+		<p>
+			<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=pmpro-mailerlite&pmpromailerlite_clear_problems=1' ), 'pmpromailerlite_clear_problems' ) ); ?>" class="button button-small">
+				<?php esc_html_e( 'Dismiss All', 'pmpro-mailerlite' ); ?>
+			</a>
+		</p>
+	</div>
+	<?php
 }
 
 /**
  * Handle clearing problem subscribers.
+ *
+ * @since 1.0
  */
-function pmproml_handle_clear_problems() {
-	if ( empty( $_GET['pmproml_clear_problems'] ) || empty( $_GET['_wpnonce'] ) ) {
+function pmpromailerlite_handle_clear_problems() {
+	if ( empty( $_GET['pmpromailerlite_clear_problems'] ) || empty( $_GET['_wpnonce'] ) ) {
 		return;
 	}
-	if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'pmproml_clear_problems' ) || ! current_user_can( 'manage_options' ) ) {
+	if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'pmpromailerlite_clear_problems' ) || ! current_user_can( 'manage_options' ) ) {
 		return;
 	}
-	delete_option( 'pmproml_problem_subscribers' );
+	delete_option( 'pmpromailerlite_problem_subscribers' );
 	wp_safe_redirect( admin_url( 'admin.php?page=pmpro-mailerlite' ) );
 	exit;
 }
-add_action( 'admin_init', 'pmproml_handle_clear_problems', 5 );
+add_action( 'admin_init', 'pmpromailerlite_handle_clear_problems', 5 );
