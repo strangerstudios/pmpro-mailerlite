@@ -16,6 +16,8 @@
  * Tested up to: 6.7
 */
 
+defined( 'ABSPATH' ) || exit;
+
 define( 'PMPROMAILERLITE_VERSION', '1.0' );
 define( 'PMPROMAILERLITE_DIR', plugin_dir_path( __FILE__ ) );
 define( 'PMPROMAILERLITE_BASENAME', plugin_basename( __FILE__ ) );

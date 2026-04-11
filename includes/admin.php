@@ -90,8 +90,6 @@ function pmpromailerlite_settings_page() {
 			?>
 		</p>
 
-		<?php pmpromailerlite_admin_notices(); ?>
-
 		<form method="post" action="">
 			<div class="pmpro_section" data-visibility="shown" data-activated="true">
 				<div class="pmpro_section_toggle">
@@ -279,87 +277,3 @@ function pmpromailerlite_settings_page() {
 	<?php
 }
 
-/**
- * Display admin notices for problem subscribers.
- *
- * @since 1.0
- */
-function pmpromailerlite_admin_notices() {
-	$problems = get_option( 'pmpromailerlite_problem_subscribers', array() );
-	if ( empty( $problems ) ) {
-		return;
-	}
-
-	$count = count( $problems );
-	?>
-	<div class="notice notice-warning">
-		<p>
-			<strong><?php esc_html_e( 'MailerLite Sync Warning', 'pmpro-mailerlite' ); ?></strong>
-		</p>
-		<p>
-			<?php
-			printf(
-				/* translators: %d: Number of problem subscribers */
-				esc_html( _n(
-					'%d subscriber could not be fully synced because their MailerLite status prevents reactivation via API. They must re-subscribe through a MailerLite form or landing page.',
-					'%d subscribers could not be fully synced because their MailerLite status prevents reactivation via API. They must re-subscribe through a MailerLite form or landing page.',
-					$count,
-					'pmpro-mailerlite'
-				) ),
-				$count
-			);
-			?>
-		</p>
-		<details>
-			<summary><?php esc_html_e( 'View affected subscribers', 'pmpro-mailerlite' ); ?></summary>
-			<table class="widefat striped" style="margin-top: 8px;">
-				<thead>
-					<tr>
-						<th><?php esc_html_e( 'User', 'pmpro-mailerlite' ); ?></th>
-						<th><?php esc_html_e( 'Email', 'pmpro-mailerlite' ); ?></th>
-						<th><?php esc_html_e( 'Status', 'pmpro-mailerlite' ); ?></th>
-						<th><?php esc_html_e( 'Detected', 'pmpro-mailerlite' ); ?></th>
-					</tr>
-				</thead>
-				<tbody>
-					<?php foreach ( $problems as $uid => $info ) : ?>
-						<tr>
-							<td>
-								<a href="<?php echo esc_url( admin_url( 'user-edit.php?user_id=' . $uid ) ); ?>">
-									<?php echo esc_html( '#' . $uid ); ?>
-								</a>
-							</td>
-							<td><?php echo esc_html( $info['email'] ); ?></td>
-							<td><code><?php echo esc_html( $info['status'] ); ?></code></td>
-							<td><?php echo esc_html( $info['time'] ); ?></td>
-						</tr>
-					<?php endforeach; ?>
-				</tbody>
-			</table>
-		</details>
-		<p>
-			<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=pmpro-mailerlite&pmpromailerlite_clear_problems=1' ), 'pmpromailerlite_clear_problems' ) ); ?>" class="button button-small">
-				<?php esc_html_e( 'Dismiss All', 'pmpro-mailerlite' ); ?>
-			</a>
-		</p>
-	</div>
-	<?php
-}
-
-/**
- * Handle clearing problem subscribers.
- *
- * @since 1.0
- */
-function pmpromailerlite_handle_clear_problems() {
-	if ( empty( $_GET['pmpromailerlite_clear_problems'] ) || empty( $_GET['_wpnonce'] ) ) {
-		return;
-	}
-	if ( ! wp_verify_nonce( $_GET['_wpnonce'], 'pmpromailerlite_clear_problems' ) || ! current_user_can( 'manage_options' ) ) {
-		return;
-	}
-	delete_option( 'pmpromailerlite_problem_subscribers' );
-	wp_safe_redirect( admin_url( 'admin.php?page=pmpro-mailerlite' ) );
-	exit;
-}
-add_action( 'admin_init', 'pmpromailerlite_handle_clear_problems', 5 );

@@ -42,8 +42,10 @@ function pmpromailerlite_debug_log( $message ) {
 	$logstr    = "Logged On: " . date_i18n( "m/d/Y H:i:s" ) . "\n" . $message . "\n-------------\n";
 	$logfile   = pmpromailerlite_get_log_file_path();
 	$loghandle = fopen( $logfile, "a+" ); // phpcs:ignore WordPress.WP.AlternativeFunctions
-	fwrite( $loghandle, $logstr ); // phpcs:ignore WordPress.WP.AlternativeFunctions
-	fclose( $loghandle ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+	if ( $loghandle ) {
+		fwrite( $loghandle, $logstr ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		fclose( $loghandle ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+	}
 }
 
 // ------------------------------------------------------------------
@@ -62,7 +64,7 @@ function pmpromailerlite_enqueue_sync_for_user( $user_id, $update_groups = true 
 	$options      = get_option( 'pmpromailerlite_options', array() );
 	$enable_async = isset( $options['enable_async'] ) ? $options['enable_async'] : 'yes';
 
-	if ( 'no' === $enable_async ) {
+	if ( 'no' === $enable_async || ! class_exists( 'PMPro_Action_Scheduler' ) ) {
 		pmpromailerlite_sync_subscriber_for_user( $user_id, $update_groups );
 		return;
 	}
@@ -183,13 +185,10 @@ function pmpromailerlite_sync_subscriber_for_user( $user_id, $update_groups = tr
 	}
 	$log .= "Upserted subscriber ID {$subscriber_id} (status: {$subscriber_status}). ";
 
-	// Flag subscribers in states that the API cannot reactivate.
+	// Log a warning for subscribers in states that the API cannot reactivate.
 	$problem_states = array( 'bounced', 'junk', 'unsubscribed' );
 	if ( in_array( $subscriber_status, $problem_states, true ) ) {
 		$log .= "WARNING: Subscriber {$subscriber_id} has status '{$subscriber_status}'. MailerLite cannot reactivate this subscriber via API — they must re-subscribe through a form or landing page. ";
-		pmpromailerlite_flag_problem_subscriber( $user_id, $user->user_email, $subscriber_status );
-	} else {
-		pmpromailerlite_clear_problem_subscriber( $user_id );
 	}
 
 	// ------------------------------------------------------------------
@@ -261,44 +260,6 @@ function pmpromailerlite_get_controlled_group_ids() {
 	}
 
 	return array_unique( array_filter( $all_groups ) );
-}
-
-// ------------------------------------------------------------------
-// Problem Subscriber Tracking
-// ------------------------------------------------------------------
-
-/**
- * Flag a subscriber in a problem state (bounced, junk, unsubscribed).
- *
- * @since 1.0
- *
- * @param int    $user_id WordPress user ID.
- * @param string $email   Subscriber email.
- * @param string $status  MailerLite subscriber status.
- */
-function pmpromailerlite_flag_problem_subscriber( $user_id, $email, $status ) {
-	$problems             = get_option( 'pmpromailerlite_problem_subscribers', array() );
-	$problems[ $user_id ] = array(
-		'email'  => $email,
-		'status' => $status,
-		'time'   => current_time( 'mysql' ),
-	);
-	update_option( 'pmpromailerlite_problem_subscribers', $problems, false );
-}
-
-/**
- * Clear a problem subscriber flag.
- *
- * @since 1.0
- *
- * @param int $user_id WordPress user ID.
- */
-function pmpromailerlite_clear_problem_subscriber( $user_id ) {
-	$problems = get_option( 'pmpromailerlite_problem_subscribers', array() );
-	if ( isset( $problems[ $user_id ] ) ) {
-		unset( $problems[ $user_id ] );
-		update_option( 'pmpromailerlite_problem_subscribers', $problems, false );
-	}
 }
 
 // ------------------------------------------------------------------
