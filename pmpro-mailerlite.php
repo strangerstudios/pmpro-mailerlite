@@ -3,7 +3,7 @@
  * Plugin Name: Paid Memberships Pro - MailerLite Add On
  * Plugin URI: https://www.paidmembershipspro.com/add-ons/pmpro-mailerlite/
  * Description: Connect Paid Memberships Pro to MailerLite to add members as subscribers and manage groups automatically.
- * Version: 1.0
+ * Version: 0.1
  * Author: Paid Memberships Pro
  * Author URI: https://www.paidmembershipspro.com
  * Text Domain: pmpro-mailerlite
@@ -18,7 +18,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'PMPROMAILERLITE_VERSION', '1.0' );
+define( 'PMPROMAILERLITE_VERSION', '0.1' );
 define( 'PMPROMAILERLITE_DIR', plugin_dir_path( __FILE__ ) );
 define( 'PMPROMAILERLITE_BASENAME', plugin_basename( __FILE__ ) );
 

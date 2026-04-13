@@ -4,7 +4,7 @@ Tags: pmpro, mailerlite, email marketing, membership, sync
 Requires at least: 5.6
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0
+Stable tag: 0.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -60,7 +60,7 @@ Depending on your settings, the member can be removed from the groups associated
 
 == Changelog ==
 
-= 1.0 - 2026-03-31 =
+= 0.1 - 2026-04-13 =
 * Initial release.
 * MailerLite API integration with Bearer token authentication.
 * Group assignment per membership level.
