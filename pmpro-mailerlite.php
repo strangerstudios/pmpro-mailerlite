@@ -2,87 +2,122 @@
 /**
  * Plugin Name: Paid Memberships Pro - MailerLite Add On
  * Plugin URI: https://www.paidmembershipspro.com/add-ons/pmpro-mailerlite/
- * Description: Sync PMPro members with MailerLite groups.
+ * Description: Connect Paid Memberships Pro to MailerLite to add members as subscribers and manage groups automatically.
  * Version: 1.0
  * Author: Paid Memberships Pro
  * Author URI: https://www.paidmembershipspro.com
- * License: GPL-2.0+
- * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: pmpro-mailerlite
  * Domain Path: /languages
+ * License: GPL-2.0+
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  *
  * Requires PHP: 7.4
  * Requires at least: 5.6
  * Tested up to: 6.7
- * Requires Plugins: paid-memberships-pro
- */
+*/
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'PMPROML_VERSION', '1.0' );
-define( 'PMPROML_DIR', plugin_dir_path( __FILE__ ) );
-define( 'PMPROML_BASENAME', plugin_basename( __FILE__ ) );
-define( 'PMPROML_URL', plugin_dir_url( __FILE__ ) );
+define( 'PMPROMAILERLITE_VERSION', '1.0' );
+define( 'PMPROMAILERLITE_DIR', plugin_dir_path( __FILE__ ) );
+define( 'PMPROMAILERLITE_BASENAME', plugin_basename( __FILE__ ) );
 
 /**
- * Load plugin files.
+ * Load plugin files after all plugins have loaded.
+ *
+ * @since 1.0
  */
-function pmproml_load_plugin() {
+function pmpromailerlite_load_plugin() {
 	if ( ! defined( 'PMPRO_VERSION' ) ) {
 		return;
 	}
 
-	require_once PMPROML_DIR . 'classes/class-pmpro-mailerlite-api.php';
-	require_once PMPROML_DIR . 'includes/functions.php';
-	require_once PMPROML_DIR . 'includes/admin.php';
+	require_once PMPROMAILERLITE_DIR . 'classes/class-pmpro-mailerlite-api.php';
+	require_once PMPROMAILERLITE_DIR . 'includes/functions.php';
+	require_once PMPROMAILERLITE_DIR . 'includes/admin.php';
 }
-add_action( 'plugins_loaded', 'pmproml_load_plugin' );
+add_action( 'plugins_loaded', 'pmpromailerlite_load_plugin' );
 
 /**
- * Set default options on activation.
+ * Show a notice after the plugin is activated.
+ *
+ * @since 1.0
  */
-function pmproml_activation() {
-	if ( ! get_option( 'pmproml_options' ) ) {
-		update_option( 'pmproml_options', array(
-			'api_key'             => '',
-			'sync_profile_update' => 'yes',
-			'unsubscribe'         => 'yes',
-			'background_sync'     => 1,
-			'logging_enabled'     => 0,
-		) );
+function pmpromailerlite_activation() {
+	set_transient( 'pmpromailerlite-admin-notice', true, 5 );
+}
+register_activation_hook( __FILE__, 'pmpromailerlite_activation' );
+
+/**
+ * Admin notice on activation.
+ *
+ * @since 1.0
+ */
+function pmpromailerlite_admin_notice() {
+	if ( get_transient( 'pmpromailerlite-admin-notice' ) ) {
+		?>
+		<div class="updated notice is-dismissible">
+			<p>
+				<?php
+				esc_html_e( 'Thank you for activating the MailerLite Add On.', 'pmpro-mailerlite' );
+				echo ' <a href="' . esc_url( admin_url( 'admin.php?page=pmpro-mailerlite' ) ) . '">';
+				esc_html_e( 'Click here to configure settings.', 'pmpro-mailerlite' );
+				echo '</a>';
+				?>
+			</p>
+		</div>
+		<?php
+		delete_transient( 'pmpromailerlite-admin-notice' );
 	}
 }
-register_activation_hook( __FILE__, 'pmproml_activation' );
+add_action( 'admin_notices', 'pmpromailerlite_admin_notice' );
 
 /**
- * Add plugin action links.
+ * Add a Settings link to the plugin action links.
+ *
+ * @since 1.0
+ *
+ * @param array $links Array of links.
+ * @return array
  */
-function pmproml_plugin_action_links( $links ) {
-	$settings_link = sprintf(
-		'<a href="%s">%s</a>',
-		esc_url( admin_url( 'admin.php?page=pmpro-mailerlite' ) ),
-		esc_html__( 'Settings', 'pmpro-mailerlite' )
-	);
-	array_unshift( $links, $settings_link );
+function pmpromailerlite_plugin_action_links( $links ) {
+	if ( current_user_can( 'manage_options' ) ) {
+		$new_links = array(
+			'<a href="' . esc_url( admin_url( 'admin.php?page=pmpro-mailerlite' ) ) . '">' . esc_html__( 'Settings', 'pmpro-mailerlite' ) . '</a>',
+		);
+		$links = array_merge( $new_links, $links );
+	}
 	return $links;
 }
-add_filter( 'plugin_action_links_' . PMPROML_BASENAME, 'pmproml_plugin_action_links' );
+add_filter( 'plugin_action_links_' . PMPROMAILERLITE_BASENAME, 'pmpromailerlite_plugin_action_links' );
 
 /**
- * Enqueue admin CSS.
+ * Add Docs and Support links to the plugin row meta.
+ *
+ * @since 1.0
+ *
+ * @param array  $links Array of links.
+ * @param string $file  Plugin basename.
+ * @return array
  */
-function pmproml_admin_enqueue_scripts( $hook ) {
-	if ( false === strpos( $hook, 'pmpro-mailerlite' ) ) {
-		return;
+function pmpromailerlite_plugin_row_meta( $links, $file ) {
+	if ( strpos( $file, 'pmpro-mailerlite.php' ) !== false ) {
+		$new_links = array(
+			'<a href="https://www.paidmembershipspro.com/add-ons/pmpro-mailerlite/" title="' . esc_attr__( 'View Documentation', 'pmpro-mailerlite' ) . '">' . esc_html__( 'Docs', 'pmpro-mailerlite' ) . '</a>',
+			'<a href="https://www.paidmembershipspro.com/support/" title="' . esc_attr__( 'Visit Customer Support Forum', 'pmpro-mailerlite' ) . '">' . esc_html__( 'Support', 'pmpro-mailerlite' ) . '</a>',
+		);
+		$links = array_merge( $links, $new_links );
 	}
-	wp_enqueue_style( 'pmproml-admin', PMPROML_URL . 'css/admin.css', array(), PMPROML_VERSION );
+	return $links;
 }
-add_action( 'admin_enqueue_scripts', 'pmproml_admin_enqueue_scripts' );
+add_filter( 'plugin_row_meta', 'pmpromailerlite_plugin_row_meta', 10, 2 );
 
 /**
- * Show admin notice if PMPro is not active.
+ * Show an admin notice if PMPro is not active.
+ *
+ * @since 1.0
  */
-function pmproml_admin_notice_no_pmpro() {
+function pmpromailerlite_admin_notice_no_pmpro() {
 	if ( defined( 'PMPRO_VERSION' ) ) {
 		return;
 	}
@@ -92,4 +127,4 @@ function pmproml_admin_notice_no_pmpro() {
 	</div>
 	<?php
 }
-add_action( 'admin_notices', 'pmproml_admin_notice_no_pmpro' );
+add_action( 'admin_notices', 'pmpromailerlite_admin_notice_no_pmpro' );

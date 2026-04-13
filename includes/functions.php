@@ -2,8 +2,8 @@
 /**
  * Core sync functions and PMPro integration hooks.
  *
- * Handles syncing membership level changes, profile updates,
- * and checkout events to MailerLite groups.
+ * Handles syncing membership level changes and profile updates
+ * to MailerLite groups.
  *
  * @since 1.0
  */
@@ -15,26 +15,37 @@ defined( 'ABSPATH' ) || exit;
 // ------------------------------------------------------------------
 
 /**
- * Log a message if logging is enabled.
+ * Get the location of the PMPro MailerLite log file.
  *
- * @param string $message Log message.
+ * @since 1.0
+ *
+ * @return string The log file path.
  */
-function pmproml_log( $message ) {
-	$options = get_option( 'pmproml_options', array() );
-	if ( empty( $options['logging_enabled'] ) ) {
+function pmpromailerlite_get_log_file_path() {
+	return apply_filters( 'pmpromailerlite_log_file_path', pmpro_get_restricted_file_path( 'logs', 'pmpro-mailerlite.log' ) );
+}
+
+/**
+ * Maybe add an entry to the debug log.
+ *
+ * @since 1.0
+ *
+ * @param string $message The log message.
+ */
+function pmpromailerlite_debug_log( $message ) {
+	$options          = get_option( 'pmpromailerlite_options', array() );
+	$enable_debug_log = isset( $options['enable_debug_log'] ) ? $options['enable_debug_log'] : 'no';
+	if ( 'yes' !== $enable_debug_log ) {
 		return;
 	}
 
-	$log_dir = defined( 'PMPRO_DIR' ) ? PMPRO_DIR . '/logs/' : PMPROML_DIR . 'logs/';
-	if ( ! is_dir( $log_dir ) ) {
-		wp_mkdir_p( $log_dir );
+	$logstr    = "Logged On: " . date_i18n( "m/d/Y H:i:s" ) . "\n" . $message . "\n-------------\n";
+	$logfile   = pmpromailerlite_get_log_file_path();
+	$loghandle = fopen( $logfile, "a+" ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+	if ( $loghandle ) {
+		fwrite( $loghandle, $logstr ); // phpcs:ignore WordPress.WP.AlternativeFunctions
+		fclose( $loghandle ); // phpcs:ignore WordPress.WP.AlternativeFunctions
 	}
-
-	$log_file = $log_dir . 'pmpro-mailerlite.log';
-	$entry    = '[' . gmdate( 'Y-m-d H:i:s' ) . '] ' . $message . "\n";
-
-	// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-	file_put_contents( $log_file, $entry, FILE_APPEND | LOCK_EX );
 }
 
 // ------------------------------------------------------------------
@@ -44,30 +55,30 @@ function pmproml_log( $message ) {
 /**
  * Enqueue a sync for a user, either via Action Scheduler or immediately.
  *
- * @param int  $user_id      WordPress user ID.
+ * @since 1.0
+ *
+ * @param int  $user_id       WordPress user ID.
  * @param bool $update_groups Whether to sync group memberships.
  */
-function pmproml_enqueue_sync_for_user( $user_id, $update_groups = true ) {
-	$options = get_option( 'pmproml_options', array() );
+function pmpromailerlite_enqueue_sync_for_user( $user_id, $update_groups = true ) {
+	$options      = get_option( 'pmpromailerlite_options', array() );
+	$enable_async = isset( $options['enable_async'] ) ? $options['enable_async'] : 'yes';
 
-	if ( ! empty( $options['background_sync'] ) && class_exists( 'PMPro_Action_Scheduler' ) ) {
-		PMPro_Action_Scheduler::get_instance()->schedule(
-			'pmproml_sync_subscriber_for_user',
-			array( $user_id, $update_groups ),
-			'pmproml_sync_tasks'
-		);
-	} else {
-		pmproml_sync_subscriber_for_user( $user_id, $update_groups );
+	if ( 'no' === $enable_async || ! class_exists( 'PMPro_Action_Scheduler' ) ) {
+		pmpromailerlite_sync_subscriber_for_user( $user_id, $update_groups );
+		return;
 	}
-}
 
-/**
- * Register the Action Scheduler callback.
- */
-function pmproml_register_action_scheduler() {
-	add_action( 'pmproml_sync_subscriber_for_user', 'pmproml_sync_subscriber_for_user', 10, 2 );
+	PMPro_Action_Scheduler::instance()->maybe_add_task(
+		'pmpromailerlite_sync_subscriber_for_user',
+		array(
+			'user_id'       => $user_id,
+			'update_groups' => $update_groups,
+		),
+		'pmpromailerlite_sync_tasks'
+	);
 }
-add_action( 'init', 'pmproml_register_action_scheduler' );
+add_action( 'pmpromailerlite_sync_subscriber_for_user', 'pmpromailerlite_sync_subscriber_for_user', 10, 2 );
 
 // ------------------------------------------------------------------
 // Sync: Core Logic
@@ -77,12 +88,14 @@ add_action( 'init', 'pmproml_register_action_scheduler' );
  * Sync a single user to MailerLite.
  *
  * Creates or updates the subscriber and manages group memberships
- * based on their membership levels.
+ * based on their current membership levels.
  *
- * @param int  $user_id      WordPress user ID.
+ * @since 1.0
+ *
+ * @param int  $user_id       WordPress user ID.
  * @param bool $update_groups Whether to sync group memberships.
  */
-function pmproml_sync_subscriber_for_user( $user_id, $update_groups = true ) {
+function pmpromailerlite_sync_subscriber_for_user( $user_id, $update_groups = true ) {
 	$api = PMPro_MailerLite_API::get_instance();
 	if ( ! $api->is_connected() ) {
 		return;
@@ -93,74 +106,49 @@ function pmproml_sync_subscriber_for_user( $user_id, $update_groups = true ) {
 		return;
 	}
 
-	$options = get_option( 'pmproml_options', array() );
+	$options = get_option( 'pmpromailerlite_options', array() );
 
 	// Get the user's current membership levels.
 	$levels    = pmpro_getMembershipLevelsForUser( $user_id );
 	$level_ids = wp_list_pluck( $levels, 'id' );
 
-	pmproml_log( "Syncing user {$user_id} ({$user->user_email}), levels: " . implode( ',', $level_ids ) );
+	// Build log message as we go.
+	$log  = "Updating subscriber for user ID {$user_id} (email: {$user->user_email}). ";
+	$log .= "Current level IDs: " . ( ! empty( $level_ids ) ? implode( ', ', $level_ids ) : 'none' ) . ". ";
+
+	// If the user has no membership levels and is not already a subscriber, bail.
+	$subscriber_id = get_user_meta( $user_id, 'pmpromailerlite_subscriber_id', true );
+	if ( empty( $level_ids ) && empty( $subscriber_id ) ) {
+		$log .= "User has no membership levels and is not a subscriber. No action taken. ";
+		pmpromailerlite_debug_log( $log );
+		return;
+	}
 
 	// ------------------------------------------------------------------
-	// Build the group list for this user.
+	// Build the group list for this user based on current levels.
 	// ------------------------------------------------------------------
 	$subscribe_groups = array();
-
-	// Groups for current levels.
 	foreach ( $level_ids as $lid ) {
-		$level_groups     = ! empty( $options[ 'level_' . $lid . '_groups' ] ) ? $options[ 'level_' . $lid . '_groups' ] : array();
+		$level_groups     = ! empty( $options[ 'level_groups_' . $lid ] ) ? $options[ 'level_groups_' . $lid ] : array();
 		$subscribe_groups = array_merge( $subscribe_groups, $level_groups );
 	}
-
-	// If no membership, add to non-member groups.
-	if ( empty( $level_ids ) ) {
-		$nonmember_groups = ! empty( $options['users_groups'] ) ? $options['users_groups'] : array();
-		$subscribe_groups = array_merge( $subscribe_groups, $nonmember_groups );
-	}
-
 	$subscribe_groups = array_unique( array_filter( $subscribe_groups ) );
+	$log .= "Groups to assign: " . ( ! empty( $subscribe_groups ) ? implode( ', ', $subscribe_groups ) : 'none' ) . ". ";
 
 	// ------------------------------------------------------------------
-	// Build custom fields.
+	// Build subscriber data.
 	// ------------------------------------------------------------------
-	$field_keys = get_option( 'pmproml_custom_field_keys', array() );
-	$fields     = array(
-		'name'      => $user->first_name,
-		'last_name' => $user->last_name,
-	);
-
-	if ( ! empty( $field_keys['pmpro_level_id'] ) ) {
-		$fields[ $field_keys['pmpro_level_id'] ] = ! empty( $level_ids ) ? implode( ',', $level_ids ) : '';
-	}
-
-	if ( ! empty( $field_keys['pmpro_level_name'] ) ) {
-		$level_names = wp_list_pluck( $levels, 'name' );
-		$fields[ $field_keys['pmpro_level_name'] ] = ! empty( $level_names ) ? implode( ', ', $level_names ) : '';
-	}
-
-	/**
-	 * Filter fields sent to MailerLite for a subscriber.
-	 *
-	 * @param array   $fields  Field data (includes built-in and custom fields).
-	 * @param WP_User $user    The WordPress user.
-	 * @param array   $levels  The user's membership levels.
-	 */
-	$fields = apply_filters( 'pmproml_subscriber_fields', $fields, $user, $levels );
-
-	// ------------------------------------------------------------------
-	// Upsert the subscriber.
-	// ------------------------------------------------------------------
-
-	// POST upsert is non-destructive — groups listed here are ADDED, not replaced.
 	$subscriber_data = array(
 		'email'  => $user->user_email,
-		'fields' => $fields,
+		'fields' => array(
+			'name'      => empty( $user->first_name ) ? $user->user_login : $user->first_name,
+			'last_name' => $user->last_name,
+		),
 		'groups' => $subscribe_groups,
 	);
 
-	// Only set status to active if the admin has enabled it (default: yes).
-	// When disabled, respects the MailerLite account's double opt-in settings.
-	$status_mode = ! empty( $options['subscriber_status_mode'] ) ? $options['subscriber_status_mode'] : 'active';
+	// Optionally bypass double opt-in by setting status to Active.
+	$status_mode = isset( $options['subscriber_status_mode'] ) ? $options['subscriber_status_mode'] : 'active';
 	if ( 'active' === $status_mode ) {
 		$subscriber_data['status'] = 'active';
 	}
@@ -168,16 +156,24 @@ function pmproml_sync_subscriber_for_user( $user_id, $update_groups = true ) {
 	/**
 	 * Filter subscriber data before sending to MailerLite.
 	 *
+	 * @since 1.0
+	 *
 	 * @param array   $subscriber_data Data for the upsert.
 	 * @param WP_User $user            The WordPress user.
 	 * @param array   $levels          The user's membership levels.
 	 */
-	$subscriber_data = apply_filters( 'pmproml_subscriber_data', $subscriber_data, $user, $levels );
+	$subscriber_data = apply_filters( 'pmpromailerlite_subscriber_data', $subscriber_data, $user, $levels );
+	$log .= "Subscriber data: " . print_r( $subscriber_data, true ) . ". "; // phpcs:ignore WordPress.PHP.DevelopmentFunctions
 
+	// ------------------------------------------------------------------
+	// Upsert the subscriber.
+	// POST /subscribers is non-destructive — groups listed here are ADDED, not replaced.
+	// ------------------------------------------------------------------
 	$result = $api->upsert_subscriber( $subscriber_data );
 
 	if ( is_wp_error( $result ) ) {
-		pmproml_log( "Failed to upsert subscriber for user {$user_id}: " . $result->get_error_message() );
+		$log .= "Error upserting subscriber: " . $result->get_error_message() . ". ";
+		pmpromailerlite_debug_log( $log );
 		return;
 	}
 
@@ -185,39 +181,53 @@ function pmproml_sync_subscriber_for_user( $user_id, $update_groups = true ) {
 	$subscriber_status = ! empty( $result['data']['status'] ) ? $result['data']['status'] : '';
 
 	if ( $subscriber_id ) {
-		update_user_meta( $user_id, 'pmproml_subscriber_id', $subscriber_id );
+		update_user_meta( $user_id, 'pmpromailerlite_subscriber_id', $subscriber_id );
 	}
+	$log .= "Upserted subscriber ID {$subscriber_id} (status: {$subscriber_status}). ";
 
-	pmproml_log( "Upserted subscriber {$subscriber_id} for user {$user_id} (status: {$subscriber_status})" );
-
-	// Flag subscribers in problem states that the API cannot reactivate.
+	// Log a warning for subscribers in states that the API cannot reactivate.
 	$problem_states = array( 'bounced', 'junk', 'unsubscribed' );
 	if ( in_array( $subscriber_status, $problem_states, true ) ) {
-		pmproml_log( "WARNING: Subscriber {$subscriber_id} (user {$user_id}, {$user->user_email}) has status '{$subscriber_status}'. MailerLite cannot reactivate this subscriber via API — they must re-subscribe through a form or landing page." );
-		pmproml_flag_problem_subscriber( $user_id, $user->user_email, $subscriber_status );
-	} else {
-		// Clear any previous flag if subscriber is now active.
-		pmproml_clear_problem_subscriber( $user_id );
+		$log .= "WARNING: Subscriber {$subscriber_id} has status '{$subscriber_status}'. MailerLite cannot reactivate this subscriber via API — they must re-subscribe through a form or landing page. ";
 	}
 
 	// ------------------------------------------------------------------
-	// Handle group removal for old levels.
+	// Handle group removal for levels the user no longer holds.
+	// POST upsert only adds groups — it does not remove.
+	// We explicitly remove groups the user should no longer be in.
 	// ------------------------------------------------------------------
+	$unsubscribe = isset( $options['unsubscribe'] ) ? $options['unsubscribe'] : 'yes';
+	if ( $update_groups && $subscriber_id && 'yes' === $unsubscribe ) {
+		$controlled_group_ids = pmpromailerlite_get_controlled_group_ids();
 
-	// POST upsert only adds groups — it doesn't remove.
-	// We need to explicitly remove groups the user shouldn't be in.
-	if ( $update_groups && $subscriber_id && ! empty( $options['unsubscribe'] ) && 'no' !== $options['unsubscribe'] ) {
-		$all_configured_groups = pmproml_get_all_configured_groups();
-		$groups_to_remove      = array_diff( $all_configured_groups, $subscribe_groups );
+		/**
+		 * Filter the group IDs that PMPro controls.
+		 *
+		 * Only PMPro-controlled groups are removed when a member loses a level.
+		 * Groups not in this list are preserved even during level changes.
+		 *
+		 * @since 1.0
+		 *
+		 * @param array $controlled_group_ids All configured group IDs.
+		 */
+		$controlled_group_ids = apply_filters( 'pmpromailerlite_controlled_group_ids', $controlled_group_ids );
+
+		$groups_to_remove = array_diff( $controlled_group_ids, $subscribe_groups );
+		$log .= "Groups to remove: " . ( ! empty( $groups_to_remove ) ? implode( ', ', $groups_to_remove ) : 'none' ) . ". ";
 
 		foreach ( $groups_to_remove as $group_id ) {
-			$api->remove_subscriber_from_group( $subscriber_id, $group_id );
+			$response = $api->remove_subscriber_from_group( $subscriber_id, $group_id );
+			if ( is_wp_error( $response ) ) {
+				$log .= "Error removing group ID {$group_id}: " . $response->get_error_message() . ". ";
+			} else {
+				$log .= "Removed group ID {$group_id}. ";
+			}
 		}
-
-		if ( ! empty( $groups_to_remove ) ) {
-			pmproml_log( "Removed subscriber {$subscriber_id} from groups: " . implode( ',', $groups_to_remove ) );
-		}
+	} elseif ( 'no' === $unsubscribe ) {
+		$log .= "Group removal is disabled. ";
 	}
+
+	pmpromailerlite_debug_log( $log );
 }
 
 // ------------------------------------------------------------------
@@ -225,73 +235,31 @@ function pmproml_sync_subscriber_for_user( $user_id, $update_groups = true ) {
 // ------------------------------------------------------------------
 
 /**
- * Get all group IDs configured across all levels + non-member groups.
+ * Get all group IDs configured across all membership levels.
+ *
+ * @since 1.0
  *
  * @return array
  */
-function pmproml_get_all_configured_groups() {
-	$options    = get_option( 'pmproml_options', array() );
-	$all_groups = array();
+function pmpromailerlite_get_controlled_group_ids() {
+	$options = get_option( 'pmpromailerlite_options', array() );
 
-	if ( ! empty( $options['users_groups'] ) ) {
-		$all_groups = array_merge( $all_groups, $options['users_groups'] );
+	// Use the pre-computed list saved on settings save when available.
+	if ( ! empty( $options['level_groups_all'] ) ) {
+		return array_unique( array_filter( $options['level_groups_all'] ) );
 	}
 
-	$levels = pmpro_getAllLevels( true, true );
+	// Fallback: compute from per-level keys.
+	$all_groups = array();
+	$levels     = pmpro_getAllLevels( true, true );
 	foreach ( $levels as $level ) {
-		$key = 'level_' . $level->id . '_groups';
+		$key = 'level_groups_' . $level->id;
 		if ( ! empty( $options[ $key ] ) ) {
 			$all_groups = array_merge( $all_groups, $options[ $key ] );
 		}
 	}
 
-	$all_groups = array_unique( array_filter( $all_groups ) );
-
-	/**
-	 * Filter which group IDs are considered PMPro-controlled.
-	 *
-	 * Only PMPro-controlled groups are removed when a member loses a level.
-	 * Groups not in this list are preserved even during level changes.
-	 *
-	 * @param array $all_groups All configured group IDs.
-	 */
-	return apply_filters( 'pmproml_controlled_group_ids', $all_groups );
-}
-
-// ------------------------------------------------------------------
-// Problem Subscriber Tracking
-// ------------------------------------------------------------------
-
-/**
- * Flag a subscriber in a problem state (bounced, junk, unsubscribed).
- *
- * Stores in a transient so the admin page can display warnings.
- *
- * @param int    $user_id WordPress user ID.
- * @param string $email   Subscriber email.
- * @param string $status  MailerLite subscriber status.
- */
-function pmproml_flag_problem_subscriber( $user_id, $email, $status ) {
-	$problems = get_option( 'pmproml_problem_subscribers', array() );
-	$problems[ $user_id ] = array(
-		'email'  => $email,
-		'status' => $status,
-		'time'   => current_time( 'mysql' ),
-	);
-	update_option( 'pmproml_problem_subscribers', $problems, false );
-}
-
-/**
- * Clear a problem subscriber flag.
- *
- * @param int $user_id WordPress user ID.
- */
-function pmproml_clear_problem_subscriber( $user_id ) {
-	$problems = get_option( 'pmproml_problem_subscribers', array() );
-	if ( isset( $problems[ $user_id ] ) ) {
-		unset( $problems[ $user_id ] );
-		update_option( 'pmproml_problem_subscribers', $problems, false );
-	}
+	return array_unique( array_filter( $all_groups ) );
 }
 
 // ------------------------------------------------------------------
@@ -299,67 +267,82 @@ function pmproml_clear_problem_subscriber( $user_id ) {
 // ------------------------------------------------------------------
 
 /**
- * Sync when membership levels change.
+ * When a user's membership level changes, sync their data to MailerLite.
  *
- * @param array $old_user_levels Array of old levels keyed by user ID.
+ * Fires after the membership level change is confirmed.
+ *
+ * @since 1.0
+ *
+ * @param array $old_users_and_levels Array of user IDs and their old levels.
  */
-function pmproml_pmpro_after_all_membership_level_changes( $old_user_levels ) {
-	if ( empty( $old_user_levels ) || ! is_array( $old_user_levels ) ) {
+function pmpromailerlite_sync_users_after_all_membership_level_changes( $old_users_and_levels ) {
+	if ( empty( $old_users_and_levels ) || ! is_array( $old_users_and_levels ) ) {
 		return;
 	}
 
-	foreach ( array_keys( $old_user_levels ) as $user_id ) {
-		pmproml_enqueue_sync_for_user( intval( $user_id ), true );
+	foreach ( array_keys( $old_users_and_levels ) as $user_id ) {
+		pmpromailerlite_enqueue_sync_for_user( intval( $user_id ), true );
 	}
 }
-add_action( 'pmpro_after_all_membership_level_changes', 'pmproml_pmpro_after_all_membership_level_changes' );
+add_action( 'pmpro_after_all_membership_level_changes', 'pmpromailerlite_sync_users_after_all_membership_level_changes', 10, 1 );
 
 /**
- * Sync when a user profile is updated.
+ * When a user's profile is updated, sync their data to MailerLite.
+ *
+ * @since 1.0
  *
  * @param int $user_id WordPress user ID.
  */
-function pmproml_profile_update( $user_id ) {
-	$options = get_option( 'pmproml_options', array() );
-
-	if ( empty( $options['sync_profile_update'] ) || 'no' === $options['sync_profile_update'] ) {
+function pmpromailerlite_sync_user_on_profile_update( $user_id ) {
+	$options                = get_option( 'pmpromailerlite_options', array() );
+	$update_on_profile_save = isset( $options['update_on_profile_save'] ) ? $options['update_on_profile_save'] : 'yes';
+	if ( 'no' === $update_on_profile_save ) {
 		return;
 	}
 
-	$update_groups = ( 'yes' === $options['sync_profile_update'] );
-	pmproml_enqueue_sync_for_user( $user_id, $update_groups );
+	pmpromailerlite_enqueue_sync_for_user( $user_id, 'subscriber_only' !== $update_on_profile_save );
 }
-add_action( 'profile_update', 'pmproml_profile_update' );
+add_action( 'profile_update', 'pmpromailerlite_sync_user_on_profile_update', 10, 1 );
 
 /**
- * Sync when admin saves a member's profile via PMPro Edit Member.
- */
-function pmproml_admin_member_edit() {
-	// phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce checked by PMPro.
-	if ( empty( $_POST['pmpro_member_edit_panel'] ) || empty( $_POST['user_id'] ) ) {
-		return;
-	}
-	pmproml_enqueue_sync_for_user( intval( $_POST['user_id'] ), true );
-}
-add_action( 'admin_init', 'pmproml_admin_member_edit', 20 );
-
-/**
- * Subscribe new non-member users to non-member groups.
+ * When user fields are saved from the PMPro Edit Member screen, sync their data to MailerLite.
  *
- * @param int $user_id New user ID.
+ * PMPro's user fields panel saves directly to user meta without firing profile_update,
+ * so we detect when a user-fields panel was saved and trigger the sync.
+ *
+ * Runs at priority 20 to fire after PMPro's save at priority 10.
+ *
+ * @since 1.0
  */
-function pmproml_user_register( $user_id ) {
-	$options = get_option( 'pmproml_options', array() );
-
-	// Don't sync during checkout — level change hook handles that.
-	if ( did_action( 'pmpro_checkout_before_change_membership_level' ) ) {
+function pmpromailerlite_sync_user_on_edit_member_user_fields_save() {
+	if ( empty( $_REQUEST['page'] ) || 'pmpro-member' !== $_REQUEST['page'] ) {
 		return;
 	}
 
-	if ( empty( $options['users_groups'] ) ) {
+	if ( empty( $_POST ) ) {
 		return;
 	}
 
-	pmproml_enqueue_sync_for_user( $user_id, false );
+	$panel_slug = empty( $_REQUEST['pmpro_member_edit_panel'] ) ? '' : sanitize_text_field( $_REQUEST['pmpro_member_edit_panel'] );
+	if ( empty( $panel_slug ) || strpos( $panel_slug, 'user-fields-' ) !== 0 ) {
+		return;
+	}
+
+	if ( empty( $_REQUEST['pmpro_member_edit_saved_panel_nonce'] ) || ! wp_verify_nonce( $_REQUEST['pmpro_member_edit_saved_panel_nonce'], 'pmpro_member_edit_saved_panel_' . $panel_slug ) ) {
+		return;
+	}
+
+	$user_id = empty( $_REQUEST['user_id'] ) ? 0 : intval( $_REQUEST['user_id'] );
+	if ( empty( $user_id ) ) {
+		return;
+	}
+
+	$options                = get_option( 'pmpromailerlite_options', array() );
+	$update_on_profile_save = isset( $options['update_on_profile_save'] ) ? $options['update_on_profile_save'] : 'yes';
+	if ( 'no' === $update_on_profile_save ) {
+		return;
+	}
+
+	pmpromailerlite_enqueue_sync_for_user( $user_id, 'subscriber_only' !== $update_on_profile_save );
 }
-add_action( 'user_register', 'pmproml_user_register' );
+add_action( 'admin_init', 'pmpromailerlite_sync_user_on_edit_member_user_fields_save', 20 );
